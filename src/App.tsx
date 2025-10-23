@@ -183,13 +183,13 @@ function PhotoSlideshow({
 
 function TimerMenu({
   options, onPick,
-}: { options: { title: string; seconds: number }[]; onPick: (s: number) => void }) {
+}: { options: { title: string; seconds: number }[]; onPick: (s: number, title: string) => void }) {
   const powerIcons = useMemo(() => ["⚡","🛡️","🦸","🔥","🛰️","🪨","🗡️","🛸"], []);
   return (
     <div className="menu">
       <div className="grid">
         {options.map((opt, i) => (
-          <button key={opt.title} className="menu-card" onClick={() => onPick(opt.seconds)}>
+          <button key={opt.title} className="menu-card" onClick={() => onPick(opt.seconds, opt.title)}>
             <span className="menu-emoji">{powerIcons[i % powerIcons.length]}</span> {opt.title}
           </button>
         ))}
@@ -199,10 +199,10 @@ function TimerMenu({
 }
 
 function SandTimer({
-  timeLeft, timeTotal, onPause, onRestart, onDone, insideUrl, contrast = 1,
+  timeLeft, timeTotal, label, isRunning, onPause, onResume, onRestart, onDone, insideUrl, contrast = 1,
 }: {
-  timeLeft: number; timeTotal: number;
-  onPause: () => void; onRestart: () => void; onDone: () => void;
+  timeLeft: number; timeTotal: number; label: string; isRunning: boolean;
+  onPause: () => void; onResume: () => void; onRestart: () => void; onDone: () => void;
   insideUrl?: string; contrast?: number;
 }) {
   const progress = timeTotal > 0 ? 1 - timeLeft / timeTotal : 0;
@@ -219,23 +219,32 @@ function SandTimer({
         <div className="center-emoji">⚡</div>
       </div>
       <div className="time-left">{fmt(timeLeft)}</div>
+      <p className="status" style={{fontSize: "14px", marginBottom: "4px"}}>{label}</p>
       <p className="status">{timeLeft > 0 ? (timeLeft <= 10 ? "Carga máxima!" : "Energia em curso…") : "Missão concluída!"}</p>
       <div className="actions">
-        <button className="btn" onClick={onPause}>Pausar</button>
+        {isRunning ? (
+          <button className="btn" onClick={onPause}>Pausar</button>
+        ) : (
+          <button className="btn" onClick={onResume}>Continuar</button>
+        )}
         <button className="btn" onClick={onRestart}>Reiniciar</button>
-        <button className="btn" onClick={onDone}>Concluir</button>
+        <button className="btn" onClick={onDone}>Remover</button>
       </div>
     </div>
   );
 }
 
 /* ====== App único ====== */
+interface Timer {
+  id: string;
+  timeLeft: number;
+  timeTotal: number;
+  isRunning: boolean;
+  label: string;
+}
+
 export default function App() {
-  const [screen, setScreen] = useState<"menu"|"tempo">("menu");
-  const [timeLeft, setTimeLeft] = useState(0);
-  const [timeTotal, setTimeTotal] = useState(0);
-  const [isRunning, setIsRunning] = useState(false);
-  const prevLeftRef = useRef<number>(0);
+  const [timers, setTimers] = useState<Timer[]>([]);
   const chime = useChime();
 
   const { photos, loading } = usePhotos();
@@ -244,28 +253,52 @@ export default function App() {
   const [contrast, setContrast] = useLocalStorage<number>("pedro_slides_contrast", 1);
   const [uploading, setUploading] = useState(false);
 
-  // Timer tick
+  // Timer tick for all timers
   useEffect(() => {
-    if (!isRunning) return;
-    if (timeLeft <= 0) { setIsRunning(false); return; }
-    const t = window.setTimeout(() => setTimeLeft(s => Math.max(0, s - 1)), 1000);
-    return () => window.clearTimeout(t);
-  }, [isRunning, timeLeft]);
+    const interval = setInterval(() => {
+      setTimers(prev =>
+        prev.map(timer => {
+          if (!timer.isRunning || timer.timeLeft <= 0) return timer;
+          const newTimeLeft = Math.max(0, timer.timeLeft - 1);
+          if (newTimeLeft === 0) chime();
+          return { ...timer, timeLeft: newTimeLeft };
+        })
+      );
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [chime]);
 
-  // Toca chime ao zerar
-  useEffect(() => {
-    if (prevLeftRef.current > 0 && timeLeft === 0) chime();
-    prevLeftRef.current = timeLeft;
-  }, [timeLeft, chime]);
+  const startTimer = (seconds: number, label: string) => {
+    const newTimer: Timer = {
+      id: Math.random().toString(36).substring(2),
+      timeLeft: seconds,
+      timeTotal: seconds,
+      isRunning: true,
+      label
+    };
+    setTimers(prev => [...prev, newTimer]);
+  };
 
-  const startTimer = (seconds: number) => {
-    setTimeTotal(seconds);
-    setTimeLeft(seconds);
-    setIsRunning(true);
-    setScreen("tempo");
+  const pauseTimer = (id: string) => {
+    setTimers(prev => prev.map(t => t.id === id ? { ...t, isRunning: false } : t));
+  };
+
+  const resumeTimer = (id: string) => {
+    setTimers(prev => prev.map(t => t.id === id ? { ...t, isRunning: true } : t));
+  };
+
+  const restartTimer = (id: string) => {
+    setTimers(prev => prev.map(t => t.id === id ? { ...t, timeLeft: t.timeTotal, isRunning: true } : t));
+  };
+
+  const removeTimer = (id: string) => {
+    setTimers(prev => prev.filter(t => t.id !== id));
   };
 
   const timerOptions = [
+    { title: "1 minuto", seconds: 1 * 60 },
+    { title: "2 minutos", seconds: 2 * 60 },
+    { title: "3 minutos", seconds: 3 * 60 },
     { title: "5 minutos", seconds: 5 * 60 },
     { title: "10 minutos", seconds: 10 * 60 },
     { title: "15 minutos", seconds: 15 * 60 },
@@ -370,19 +403,32 @@ export default function App() {
         )}
       </div>
 
-      {/* telas */}
-      {screen === "menu" && <TimerMenu options={timerOptions} onPick={startTimer} />}
+      {/* menu */}
+      <TimerMenu options={timerOptions} onPick={(seconds, title) => startTimer(seconds, title)} />
 
-      {screen === "tempo" && (
-        <SandTimer
-          timeLeft={timeLeft}
-          timeTotal={timeTotal}
-          onPause={() => setIsRunning(false)}
-          onRestart={() => { setTimeLeft(timeTotal); setIsRunning(true); }}
-          onDone={() => { setScreen("menu"); setIsRunning(false); }}
-          insideUrl={currentInsideUrl}
-          contrast={contrast}
-        />
+      {/* timers ativos */}
+      {timers.length > 0 && (
+        <div style={{
+          position: "relative", zIndex: 2, width: "100%", maxWidth: "1040px",
+          display: "flex", flexWrap: "wrap", gap: "20px", justifyContent: "center",
+          marginTop: "20px"
+        }}>
+          {timers.map(timer => (
+            <SandTimer
+              key={timer.id}
+              timeLeft={timer.timeLeft}
+              timeTotal={timer.timeTotal}
+              label={timer.label}
+              isRunning={timer.isRunning}
+              onPause={() => pauseTimer(timer.id)}
+              onResume={() => resumeTimer(timer.id)}
+              onRestart={() => restartTimer(timer.id)}
+              onDone={() => removeTimer(timer.id)}
+              insideUrl={currentInsideUrl}
+              contrast={contrast}
+            />
+          ))}
+        </div>
       )}
     </div>
   );
