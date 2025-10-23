@@ -1,11 +1,14 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { usePhotos } from "./hooks/usePhotos";
+import { uploadPhoto, deletePhoto, deleteAllPhotos } from "./services/photoService";
+import type { Photo } from "./lib/supabase";
 
 /**
  * App único: Forças do Tempo (sem Tailwind, sem PostCSS)
  * - Timer 5/10/15/30 min, 1h, 2h
  * - Ampulheta com progresso
  * - Chime com WebAudio ao zerar
- * - Slideshow de fotos (upload), persistido em localStorage
+ * - Slideshow de fotos (upload), sincronizado via Supabase
  * - Controle de opacidade e play/pause do slideshow
  */
 
@@ -98,7 +101,7 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: ui-san
 .thumbbar img:hover { opacity: 1; }
 
 .bg-host { position: absolute; inset: 0; z-index: 0; overflow: hidden; }
-.bg-host img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; filter: blur(2px); transform: scale(1.05); transition: opacity .4s ease; }
+.bg-host img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; transform: scale(1.05); transition: opacity .4s ease; }
 .bg-grad { position:absolute; inset:0; background: linear-gradient(to bottom, rgba(11,16,32,.4), rgba(11,16,32,1)); }
 
 .hero-svg { position:absolute; inset:0; width:100%; height:100%; z-index:1; pointer-events:none; }
@@ -152,13 +155,11 @@ function useLocalStorage<T>(key: string, initial: T) {
   return [value, setValue] as const;
 }
 
-/* ====== Tipos ====== */
-type Slide = { url: string };
 
 /* ====== Subcomponentes ====== */
 function PhotoSlideshow({
-  images, playing, intervalMs = 6000, opacity = 0.22,
-}: { images: Slide[]; playing: boolean; intervalMs?: number; opacity?: number; }) {
+  images, playing, intervalMs = 6000, opacity = 0.22, contrast = 1,
+}: { images: Photo[]; playing: boolean; intervalMs?: number; opacity?: number; contrast?: number; }) {
   const [idx, setIdx] = useState(0);
   useEffect(() => {
     if (!playing || images.length < 2) return;
@@ -166,10 +167,15 @@ function PhotoSlideshow({
     return () => clearInterval(id);
   }, [playing, images.length, intervalMs]);
   if (!images.length) return null;
-  const current = images[idx]?.url;
+  const current = images[idx]?.public_url;
   return (
     <div className="bg-host">
-      <img key={current} src={current} alt="Foto do Pedro" style={{ opacity }} />
+      <img
+        key={current}
+        src={current}
+        alt="Foto"
+        style={{ opacity, filter: `blur(2px) contrast(${contrast})` }}
+      />
       <div className="bg-grad" />
     </div>
   );
@@ -193,11 +199,11 @@ function TimerMenu({
 }
 
 function SandTimer({
-  timeLeft, timeTotal, onPause, onRestart, onDone, insideUrl,
+  timeLeft, timeTotal, onPause, onRestart, onDone, insideUrl, contrast = 1,
 }: {
   timeLeft: number; timeTotal: number;
   onPause: () => void; onRestart: () => void; onDone: () => void;
-  insideUrl?: string;
+  insideUrl?: string; contrast?: number;
 }) {
   const progress = timeTotal > 0 ? 1 - timeLeft / timeTotal : 0;
   const pct = Math.min(100, Math.max(0, progress * 100));
@@ -205,10 +211,9 @@ function SandTimer({
   return (
     <div className="timer-wrap">
       <div className="glass">
-        {/* Slideshow dentro da ampulheta (se houver) */}
         {insideUrl && <img src={insideUrl} alt="" style={{
           position:"absolute", inset:0, width:"100%", height:"100%",
-          objectFit:"cover", filter:"blur(2px)", transform:"scale(1.05)", opacity:.22
+          objectFit:"cover", filter:`blur(2px) contrast(${contrast})`, transform:"scale(1.05)", opacity:.22
         }} />}
         <div className="fill" style={{ height: `${pct}%` }} />
         <div className="center-emoji">⚡</div>
@@ -233,9 +238,11 @@ export default function App() {
   const prevLeftRef = useRef<number>(0);
   const chime = useChime();
 
-  const [slides, setSlides] = useLocalStorage<Slide[]>("pedro_slides", []);
+  const { photos, loading } = usePhotos();
   const [playing, setPlaying] = useLocalStorage<boolean>("pedro_slides_play", true);
   const [opacity, setOpacity] = useLocalStorage<number>("pedro_slides_opacity", 0.22);
+  const [contrast, setContrast] = useLocalStorage<number>("pedro_slides_contrast", 1);
+  const [uploading, setUploading] = useState(false);
 
   // Timer tick
   useEffect(() => {
@@ -270,25 +277,24 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const onAddPhotos = async (files: FileList | null) => {
     if (!files || !files.length) return;
-    const readFile = (f: File) =>
-      new Promise<string>((resolve, reject) => {
-        const fr = new FileReader();
-        fr.onload = () => resolve(String(fr.result));
-        fr.onerror = reject;
-        fr.readAsDataURL(f);
-      });
-    const newSlides: Slide[] = [];
-    for (const f of Array.from(files)) {
-      if (!f.type.startsWith("image/")) continue;
-      try {
-        const dataUrl = await readFile(f);
-        newSlides.push({ url: dataUrl });
-      } catch {}
+    setUploading(true);
+    for (const file of Array.from(files)) {
+      if (!file.type.startsWith("image/")) continue;
+      await uploadPhoto(file);
     }
-    if (newSlides.length) setSlides(prev => [...prev, ...newSlides]);
+    setUploading(false);
   };
 
-  const currentInsideUrl = slides[0]?.url; // simples: usa a 1ª foto dentro da ampulheta
+  const onDeletePhoto = async (photo: Photo) => {
+    await deletePhoto(photo);
+  };
+
+  const onDeleteAllPhotos = async () => {
+    if (photos.length === 0) return;
+    await deleteAllPhotos(photos);
+  };
+
+  const currentInsideUrl = photos[0]?.public_url; // simples: usa a 1ª foto dentro da ampulheta
 
   return (
     <div className="app">
@@ -296,7 +302,7 @@ export default function App() {
       <style>{styles}</style>
 
       {/* fundo com slideshow */}
-      <PhotoSlideshow images={slides} playing={playing} opacity={opacity} />
+      <PhotoSlideshow images={photos} playing={playing} opacity={opacity} contrast={contrast} />
 
       {/* “brilho” sutil (SVG) */}
       <svg className="hero-svg" aria-hidden>
@@ -321,7 +327,9 @@ export default function App() {
 
       {/* barra de controles */}
       <div className="toolbar">
-        <button className="btn" onClick={() => fileInputRef.current?.click()}>Adicionar fotos</button>
+        <button className="btn" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
+          {uploading ? "Enviando..." : "Adicionar fotos"}
+        </button>
         <input
           ref={fileInputRef}
           type="file"
@@ -341,14 +349,23 @@ export default function App() {
             onChange={(e) => setOpacity(parseFloat(e.target.value))}
           />
         </label>
-        {slides.length > 0 && (
+        <label className="range">
+          Contraste
+          <input
+            type="range" min={1} max={3} step={0.1}
+            value={contrast}
+            onChange={(e) => setContrast(parseFloat(e.target.value))}
+          />
+        </label>
+        {loading && <span style={{opacity: 0.7}}>Carregando fotos...</span>}
+        {photos.length > 0 && (
           <>
             <div className="thumbbar">
-              {slides.map((s, i) => (
-                <img key={i} src={s.url} alt="" onClick={() => setSlides(prev => prev.filter((_, idx) => idx !== i))} />
+              {photos.map((photo) => (
+                <img key={photo.id} src={photo.public_url} alt="" onClick={() => onDeletePhoto(photo)} />
               ))}
             </div>
-            <button className="btn btn-danger" onClick={() => setSlides([])}>Limpar fotos</button>
+            <button className="btn btn-danger" onClick={onDeleteAllPhotos}>Limpar fotos</button>
           </>
         )}
       </div>
@@ -364,6 +381,7 @@ export default function App() {
           onRestart={() => { setTimeLeft(timeTotal); setIsRunning(true); }}
           onDone={() => { setScreen("menu"); setIsRunning(false); }}
           insideUrl={currentInsideUrl}
+          contrast={contrast}
         />
       )}
     </div>
